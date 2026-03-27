@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { broadcastAPI, segmentAPI, subscriberAPI, pageAPI, healthCheck } from './utils/api';
+import { broadcastAPI, segmentAPI, subscriberAPI, pageAPI, healthCheck, isDemoMode } from './utils/api';
 import {
   Send, Users, BarChart3, Clock, Plus, Trash2, Check, X,
   Search, Inbox, Tag, Eye, Zap, Calendar, Facebook, RefreshCw,
@@ -372,6 +372,13 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {/* Demo Mode Banner */}
+      {isDemoMode && (
+        <div style={{ background: 'linear-gradient(90deg, #F59E0B, #EF4444)', padding: '8px 24px', fontSize: 13, fontWeight: 500, textAlign: 'center', color: 'white' }}>
+          🎮 Demo Mode — ข้อมูลจำลองสำหรับทดลองใช้งาน | เชื่อมต่อ Backend เพื่อใช้งานจริง
+        </div>
+      )}
 
       {/* Tabs */}
       <nav className="tabs">
