@@ -3,58 +3,41 @@ const router = express.Router();
 const db = require('../utils/store');
 const FacebookAPI = require('../utils/facebook');
 
-// GET /api/subscribers
-router.get('/', (req, res) => {
-  const subscribers = db.getSubscribers();
-  res.json({ success: true, data: subscribers, total: subscribers.length });
+router.get('/', async (req, res) => {
+  try {
+    const subs = await db.getSubscribers();
+    res.json({ success: true, data: subs, total: subs.length });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// POST /api/subscribers/sync - ดึง subscribers จาก Facebook
 router.post('/sync', async (req, res) => {
   try {
     const fb = new FacebookAPI();
     const result = await fb.getConversations(100);
-
-    if (!result.success) {
-      return res.status(400).json({ success: false, error: result.error });
-    }
+    if (!result.success) return res.status(400).json({ success: false, error: result.error });
 
     let synced = 0;
-    const conversations = result.data?.data || [];
-
-    for (const conv of conversations) {
-      const participants = conv.participants?.data || [];
-      for (const participant of participants) {
-        // Skip page itself
-        if (participant.id === process.env.FB_PAGE_ID) continue;
-
-        const profile = await fb.getUserProfile(participant.id);
-        db.addSubscriber({
-          id: participant.id,
-          name: profile.success
-            ? `${profile.data.first_name || ''} ${profile.data.last_name || ''}`.trim()
-            : participant.name || 'Unknown',
+    for (const conv of (result.data?.data || [])) {
+      for (const p of (conv.participants?.data || [])) {
+        if (p.id === process.env.FB_PAGE_ID) continue;
+        const profile = await fb.getUserProfile(p.id);
+        await db.addSubscriber({
+          id: p.id,
+          name: profile.success ? `${profile.data.first_name || ''} ${profile.data.last_name || ''}`.trim() : p.name || 'Unknown',
           profilePic: profile.success ? profile.data.profile_pic : null,
           lastInteraction: conv.updated_time,
         });
         synced++;
       }
     }
-
-    res.json({
-      success: true,
-      message: `Synced ${synced} subscribers`,
-      total: db.getSubscribers().length,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
+    const subs = await db.getSubscribers();
+    res.json({ success: true, message: `Sync สำเร็จ ${synced} คน`, total: subs.length });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// DELETE /api/subscribers/:id
-router.delete('/:id', (req, res) => {
-  db.removeSubscriber(req.params.id);
-  res.json({ success: true });
+router.delete('/:id', async (req, res) => {
+  try { await db.removeSubscriber(req.params.id); res.json({ success: true }); }
+  catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
 module.exports = router;

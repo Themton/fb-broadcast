@@ -1,179 +1,164 @@
 /**
- * In-Memory Data Store
- * สามารถเปลี่ยนเป็น MongoDB ได้ในภายหลัง
+ * Data Store — Supabase
  */
+const { getClient } = require('./supabase');
+const sb = () => getClient();
 
-let store = {
-  // ── Page Config ──
-  pageConfig: {
-    pageId: process.env.FB_PAGE_ID || '',
-    pageName: '',
-    pageToken: process.env.FB_PAGE_ACCESS_TOKEN || '',
-    connected: false,
-    connectedAt: null,
-  },
+// ── Page Config ──
+async function getPageConfig() {
+  const { data } = await sb().from('page_config').select('*').limit(1).single();
+  if (!data) return { connected: false };
+  return { id: data.id, pageId: data.page_id, pageName: data.page_name, pageToken: data.page_token, connected: data.connected, connectedAt: data.connected_at, fanCount: data.fan_count, picture: data.picture, category: data.category };
+}
 
-  // ── Subscribers ──
-  subscribers: [],
+async function setPageConfig(config) {
+  const current = await getPageConfig();
+  const mapped = { updated_at: new Date().toISOString() };
+  if (config.pageId !== undefined) mapped.page_id = config.pageId;
+  if (config.pageName !== undefined) mapped.page_name = config.pageName;
+  if (config.pageToken !== undefined) mapped.page_token = config.pageToken;
+  if (config.connected !== undefined) mapped.connected = config.connected;
+  if (config.connectedAt !== undefined) mapped.connected_at = config.connectedAt;
+  if (config.fanCount !== undefined) mapped.fan_count = config.fanCount;
+  if (config.picture !== undefined) mapped.picture = config.picture;
+  if (config.category !== undefined) mapped.category = config.category;
+  const { data } = await sb().from('page_config').update(mapped).eq('id', current.id).select().single();
+  return getPageConfig();
+}
 
-  // ── Segments ──
-  segments: [
-    { id: 'seg_1', name: 'ลูกค้า VIP', color: '#F59E0B', icon: '⭐', subscriberIds: [], createdAt: new Date().toISOString() },
-    { id: 'seg_2', name: 'ลูกค้าใหม่', color: '#10B981', icon: '🆕', subscriberIds: [], createdAt: new Date().toISOString() },
-    { id: 'seg_3', name: 'สนใจโปรโมชั่น', color: '#8B5CF6', icon: '🎯', subscriberIds: [], createdAt: new Date().toISOString() },
-  ],
+// ── Subscribers ──
+async function getSubscribers() {
+  const { data } = await sb().from('subscribers').select('*').order('created_at', { ascending: false });
+  return (data || []).map(r => ({ id: r.psid, name: r.name, profilePic: r.profile_pic, subscribedAt: r.subscribed_at, lastInteraction: r.last_interaction }));
+}
 
-  // ── Broadcasts ──
-  broadcasts: [],
+async function addSubscriber(sub) {
+  const { data: existing } = await sb().from('subscribers').select('*').eq('psid', sub.id).maybeSingle();
+  if (existing) {
+    await sb().from('subscribers').update({ name: sub.name || existing.name, profile_pic: sub.profilePic, last_interaction: sub.lastInteraction || new Date().toISOString() }).eq('psid', sub.id);
+    return { id: sub.id, name: sub.name || existing.name };
+  }
+  const { data } = await sb().from('subscribers').insert({ psid: sub.id, name: sub.name || 'Unknown', profile_pic: sub.profilePic, last_interaction: sub.lastInteraction }).select().single();
+  return { id: data.psid, name: data.name };
+}
 
-  // ── Stats ──
-  stats: {
-    totalSent: 0,
-    totalDelivered: 0,
-    totalRead: 0,
-    totalClicked: 0,
-  },
+async function removeSubscriber(psid) {
+  await sb().from('segment_members').delete().eq('subscriber_psid', psid);
+  await sb().from('subscribers').delete().eq('psid', psid);
+}
+
+async function getSubscribersBySegment(segmentId) {
+  if (segmentId === 'all') return await getSubscribers();
+  const { data: members } = await sb().from('segment_members').select('subscriber_psid').eq('segment_id', segmentId);
+  if (!members || !members.length) return [];
+  const { data } = await sb().from('subscribers').select('*').in('psid', members.map(m => m.subscriber_psid));
+  return (data || []).map(r => ({ id: r.psid, name: r.name, profilePic: r.profile_pic }));
+}
+
+// ── Segments ──
+async function getSegments() {
+  const { data: segs } = await sb().from('segments').select('*').order('created_at', { ascending: true });
+  const results = [];
+  for (const seg of (segs || [])) {
+    const { count } = await sb().from('segment_members').select('*', { count: 'exact', head: true }).eq('segment_id', seg.id);
+    results.push({ id: seg.id, name: seg.name, color: seg.color, icon: seg.icon, count: count || 0 });
+  }
+  return results;
+}
+
+async function addSegment(segment) {
+  const { data } = await sb().from('segments').insert({ name: segment.name, color: segment.color || '#6366F1', icon: segment.icon || '📌' }).select().single();
+  return { id: data.id, name: data.name, color: data.color, icon: data.icon, count: 0 };
+}
+
+async function updateSegment(id, updates) {
+  const mapped = {};
+  if (updates.name) mapped.name = updates.name;
+  if (updates.color) mapped.color = updates.color;
+  if (updates.icon) mapped.icon = updates.icon;
+  const { data } = await sb().from('segments').update(mapped).eq('id', id).select().single();
+  if (!data) return null;
+  const { count } = await sb().from('segment_members').select('*', { count: 'exact', head: true }).eq('segment_id', id);
+  return { id: data.id, name: data.name, color: data.color, icon: data.icon, count: count || 0 };
+}
+
+async function deleteSegment(id) {
+  await sb().from('segment_members').delete().eq('segment_id', id);
+  await sb().from('segments').delete().eq('id', id);
+}
+
+async function addSubscriberToSegment(segmentId, subscriberId) {
+  await sb().from('segment_members').upsert({ segment_id: segmentId, subscriber_psid: subscriberId }, { onConflict: 'segment_id,subscriber_psid' });
+}
+
+async function removeSubscriberFromSegment(segmentId, subscriberId) {
+  await sb().from('segment_members').delete().match({ segment_id: segmentId, subscriber_psid: subscriberId });
+}
+
+// ── Broadcasts ──
+async function getBroadcasts() {
+  const { data } = await sb().from('broadcasts').select('*').order('created_at', { ascending: false });
+  return (data || []).map(fmtBc);
+}
+
+async function getBroadcastById(id) {
+  const { data } = await sb().from('broadcasts').select('*').eq('id', id).single();
+  return fmtBc(data);
+}
+
+async function addBroadcast(bc) {
+  const { data } = await sb().from('broadcasts').insert({
+    title: bc.title, message: bc.message, target_segment: bc.targetSegment || 'all',
+    target_segment_names: bc.targetSegmentNames || ['ทั้งหมด'], status: bc.status || 'draft', scheduled_at: bc.scheduledAt,
+  }).select().single();
+  return fmtBc(data);
+}
+
+async function updateBroadcast(id, updates) {
+  const mapped = {};
+  if (updates.status !== undefined) mapped.status = updates.status;
+  if (updates.sentAt) mapped.sent_at = updates.sentAt;
+  if (updates.completedAt) mapped.completed_at = updates.completedAt;
+  if (updates.stats) {
+    mapped.stat_total = updates.stats.total; mapped.stat_sent = updates.stats.sent;
+    mapped.stat_delivered = updates.stats.delivered; mapped.stat_read = updates.stats.read;
+    mapped.stat_clicked = updates.stats.clicked; mapped.stat_failed = updates.stats.failed;
+    mapped.stat_errors = JSON.stringify(updates.stats.errors || []);
+  }
+  const { data } = await sb().from('broadcasts').update(mapped).eq('id', id).select().single();
+  return fmtBc(data);
+}
+
+async function deleteBroadcast(id) { await sb().from('broadcasts').delete().eq('id', id); }
+
+async function getScheduledBroadcasts() {
+  const { data } = await sb().from('broadcasts').select('*').eq('status', 'scheduled');
+  return (data || []).map(fmtBc);
+}
+
+function fmtBc(r) {
+  if (!r) return null;
+  return { id: r.id, title: r.title, message: r.message, targetSegment: r.target_segment, targetSegmentNames: r.target_segment_names || [],
+    status: r.status, scheduledAt: r.scheduled_at, sentAt: r.sent_at, completedAt: r.completed_at, createdAt: r.created_at,
+    stats: { total: r.stat_total||0, sent: r.stat_sent||0, delivered: r.stat_delivered||0, read: r.stat_read||0, clicked: r.stat_clicked||0, failed: r.stat_failed||0, errors: r.stat_errors||[] }};
+}
+
+// ── Stats ──
+async function getStats() {
+  const { count: totalSubs } = await sb().from('subscribers').select('*', { count: 'exact', head: true });
+  const { data: all } = await sb().from('broadcasts').select('*');
+  const bcs = all || [];
+  const done = bcs.filter(b => b.status === 'completed');
+  const tDel = done.reduce((a, b) => a + (b.stat_delivered||0), 0);
+  const tRead = done.reduce((a, b) => a + (b.stat_read||0), 0);
+  return { totalSubscribers: totalSubs||0, totalBroadcasts: bcs.length, totalSent: done.reduce((a,b) => a+(b.stat_sent||0),0),
+    totalDelivered: tDel, totalRead: tRead, totalClicked: done.reduce((a,b) => a+(b.stat_clicked||0),0),
+    scheduledCount: bcs.filter(b => b.status==='scheduled').length,
+    avgReadRate: tDel > 0 ? ((tRead/tDel)*100).toFixed(1) : 0 };
+}
+
+module.exports = {
+  getPageConfig, setPageConfig, getSubscribers, addSubscriber, removeSubscriber, getSubscribersBySegment,
+  getSegments, addSegment, updateSegment, deleteSegment, addSubscriberToSegment, removeSubscriberFromSegment,
+  getBroadcasts, getBroadcastById, addBroadcast, updateBroadcast, deleteBroadcast, getScheduledBroadcasts, getStats,
 };
-
-const db = {
-  // ── Page Config ──
-  getPageConfig: () => store.pageConfig,
-  setPageConfig: (config) => {
-    store.pageConfig = { ...store.pageConfig, ...config };
-    return store.pageConfig;
-  },
-
-  // ── Subscribers ──
-  getSubscribers: () => store.subscribers,
-  addSubscriber: (sub) => {
-    const existing = store.subscribers.find(s => s.id === sub.id);
-    if (existing) {
-      Object.assign(existing, sub);
-      return existing;
-    }
-    const newSub = {
-      id: sub.id,
-      name: sub.name || 'Unknown',
-      profilePic: sub.profilePic || null,
-      segments: sub.segments || [],
-      subscribedAt: sub.subscribedAt || new Date().toISOString(),
-      lastInteraction: sub.lastInteraction || new Date().toISOString(),
-    };
-    store.subscribers.push(newSub);
-    return newSub;
-  },
-  removeSubscriber: (id) => {
-    store.subscribers = store.subscribers.filter(s => s.id !== id);
-  },
-  getSubscribersBySegment: (segmentId) => {
-    if (segmentId === 'all') return store.subscribers;
-    const segment = store.segments.find(s => s.id === segmentId);
-    if (!segment) return [];
-    return store.subscribers.filter(s => segment.subscriberIds.includes(s.id));
-  },
-
-  // ── Segments ──
-  getSegments: () => store.segments.map(seg => ({
-    ...seg,
-    count: seg.subscriberIds.length,
-  })),
-  addSegment: (segment) => {
-    const newSeg = {
-      id: `seg_${Date.now()}`,
-      name: segment.name,
-      color: segment.color || '#6366F1',
-      icon: segment.icon || '📌',
-      subscriberIds: segment.subscriberIds || [],
-      createdAt: new Date().toISOString(),
-    };
-    store.segments.push(newSeg);
-    return { ...newSeg, count: newSeg.subscriberIds.length };
-  },
-  updateSegment: (id, updates) => {
-    const seg = store.segments.find(s => s.id === id);
-    if (!seg) return null;
-    Object.assign(seg, updates);
-    return { ...seg, count: seg.subscriberIds.length };
-  },
-  deleteSegment: (id) => {
-    store.segments = store.segments.filter(s => s.id !== id);
-  },
-  addSubscriberToSegment: (segmentId, subscriberId) => {
-    const seg = store.segments.find(s => s.id === segmentId);
-    if (seg && !seg.subscriberIds.includes(subscriberId)) {
-      seg.subscriberIds.push(subscriberId);
-    }
-  },
-  removeSubscriberFromSegment: (segmentId, subscriberId) => {
-    const seg = store.segments.find(s => s.id === segmentId);
-    if (seg) {
-      seg.subscriberIds = seg.subscriberIds.filter(id => id !== subscriberId);
-    }
-  },
-
-  // ── Broadcasts ──
-  getBroadcasts: () => store.broadcasts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
-  getBroadcastById: (id) => store.broadcasts.find(b => b.id === id),
-  addBroadcast: (broadcast) => {
-    const newBroadcast = {
-      id: `bc_${Date.now()}`,
-      title: broadcast.title,
-      message: broadcast.message,
-      targetSegment: broadcast.targetSegment || 'all',
-      targetSegmentNames: broadcast.targetSegmentNames || ['ทั้งหมด'],
-      status: broadcast.status || 'draft', // draft, scheduled, sending, completed, failed
-      scheduledAt: broadcast.scheduledAt || null,
-      sentAt: null,
-      completedAt: null,
-      createdAt: new Date().toISOString(),
-      stats: {
-        total: 0,
-        sent: 0,
-        delivered: 0,
-        read: 0,
-        clicked: 0,
-        failed: 0,
-        errors: [],
-      },
-    };
-    store.broadcasts.push(newBroadcast);
-    return newBroadcast;
-  },
-  updateBroadcast: (id, updates) => {
-    const bc = store.broadcasts.find(b => b.id === id);
-    if (!bc) return null;
-    Object.assign(bc, updates);
-    return bc;
-  },
-  deleteBroadcast: (id) => {
-    store.broadcasts = store.broadcasts.filter(b => b.id !== id);
-  },
-  getScheduledBroadcasts: () => {
-    return store.broadcasts.filter(b => b.status === 'scheduled');
-  },
-
-  // ── Stats ──
-  getStats: () => {
-    const completed = store.broadcasts.filter(b => b.status === 'completed');
-    return {
-      totalSubscribers: store.subscribers.length,
-      totalBroadcasts: store.broadcasts.length,
-      totalSent: completed.reduce((a, b) => a + b.stats.sent, 0),
-      totalDelivered: completed.reduce((a, b) => a + b.stats.delivered, 0),
-      totalRead: completed.reduce((a, b) => a + b.stats.read, 0),
-      totalClicked: completed.reduce((a, b) => a + b.stats.clicked, 0),
-      scheduledCount: store.broadcasts.filter(b => b.status === 'scheduled').length,
-      avgReadRate: completed.length > 0
-        ? (completed.reduce((a, b) => a + (b.stats.delivered > 0 ? b.stats.read / b.stats.delivered : 0), 0) / completed.length * 100).toFixed(1)
-        : 0,
-    };
-  },
-
-  // ── Reset ──
-  reset: () => {
-    store.subscribers = [];
-    store.broadcasts = [];
-  },
-};
-
-module.exports = db;

@@ -2,44 +2,40 @@ const express = require('express');
 const router = express.Router();
 const db = require('../utils/store');
 
-// GET /api/segments
-router.get('/', (req, res) => {
-  res.json({ success: true, data: db.getSegments() });
+router.get('/', async (req, res) => {
+  try { res.json({ success: true, data: await db.getSegments() }); }
+  catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// POST /api/segments
-router.post('/', (req, res) => {
-  const { name, color, icon } = req.body;
-  if (!name) return res.status(400).json({ success: false, error: 'กรุณากรอกชื่อกลุ่ม' });
-  const segment = db.addSegment({ name, color, icon });
-  res.json({ success: true, data: segment });
+router.post('/', async (req, res) => {
+  try {
+    const { name, color, icon } = req.body;
+    if (!name) return res.status(400).json({ success: false, error: 'กรุณากรอกชื่อกลุ่ม' });
+    res.json({ success: true, data: await db.addSegment({ name, color, icon }) });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// PUT /api/segments/:id
-router.put('/:id', (req, res) => {
-  const segment = db.updateSegment(req.params.id, req.body);
-  if (!segment) return res.status(404).json({ success: false, error: 'ไม่พบกลุ่ม' });
-  res.json({ success: true, data: segment });
+router.put('/:id', async (req, res) => {
+  try {
+    const seg = await db.updateSegment(req.params.id, req.body);
+    if (!seg) return res.status(404).json({ success: false, error: 'ไม่พบกลุ่ม' });
+    res.json({ success: true, data: seg });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// DELETE /api/segments/:id
-router.delete('/:id', (req, res) => {
-  db.deleteSegment(req.params.id);
-  res.json({ success: true, message: 'ลบกลุ่มเรียบร้อย' });
+router.delete('/:id', async (req, res) => {
+  try { await db.deleteSegment(req.params.id); res.json({ success: true }); }
+  catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// POST /api/segments/:id/add-subscriber
-router.post('/:id/add-subscriber', (req, res) => {
-  const { subscriberId } = req.body;
-  db.addSubscriberToSegment(req.params.id, subscriberId);
-  res.json({ success: true });
+router.post('/:id/add-subscriber', async (req, res) => {
+  try { await db.addSubscriberToSegment(req.params.id, req.body.subscriberId); res.json({ success: true }); }
+  catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// POST /api/segments/:id/remove-subscriber
-router.post('/:id/remove-subscriber', (req, res) => {
-  const { subscriberId } = req.body;
-  db.removeSubscriberFromSegment(req.params.id, subscriberId);
-  res.json({ success: true });
+router.post('/:id/remove-subscriber', async (req, res) => {
+  try { await db.removeSubscriberFromSegment(req.params.id, req.body.subscriberId); res.json({ success: true }); }
+  catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
 module.exports = router;

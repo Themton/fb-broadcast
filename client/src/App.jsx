@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { broadcastAPI, segmentAPI, subscriberAPI, pageAPI, healthCheck, isDemoMode } from './utils/api';
+import { broadcastAPI, segmentAPI, subscriberAPI, pageAPI, healthCheck, isDemoMode, detectMode } from './utils/api';
 import {
   Send, Users, BarChart3, Clock, Plus, Trash2, Check, X,
   Search, Inbox, Tag, Eye, Zap, Calendar, Facebook, RefreshCw,
@@ -241,13 +241,21 @@ export default function App() {
   const [pageName, setPageName] = useState('');
   const [pageToken, setPageToken] = useState('');
   const [newSegName, setNewSegName] = useState('');
+  const [demoMode, setDemoMode] = useState(false);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
   };
 
-  // ── Fetch Data ──
+  // ── Detect mode & Fetch Data ──
+  useEffect(() => {
+    detectMode().then(isDemo => {
+      setDemoMode(isDemo);
+      fetchData();
+    });
+  }, []);
+
   const fetchData = useCallback(async () => {
     try {
       const [bcRes, segRes, statsRes, pageRes] = await Promise.allSettled([
@@ -268,7 +276,7 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  // fetchData is called in detectMode useEffect above
 
   // ── Send Broadcast ──
   const handleSend = async (data) => {
@@ -374,7 +382,7 @@ export default function App() {
       </header>
 
       {/* Demo Mode Banner */}
-      {isDemoMode && (
+      {demoMode && (
         <div style={{ background: 'linear-gradient(90deg, #F59E0B, #EF4444)', padding: '8px 24px', fontSize: 13, fontWeight: 500, textAlign: 'center', color: 'white' }}>
           🎮 Demo Mode — ข้อมูลจำลองสำหรับทดลองใช้งาน | เชื่อมต่อ Backend เพื่อใช้งานจริง
         </div>

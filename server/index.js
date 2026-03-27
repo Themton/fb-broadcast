@@ -9,13 +9,14 @@ const segmentRoutes = require('./routes/segments');
 const subscriberRoutes = require('./routes/subscribers');
 const pageRoutes = require('./routes/page');
 const scheduleService = require('./utils/scheduler');
+const { testConnection } = require('./utils/supabase');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 // ── Middleware ──
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5173',
+  origin: process.env.CLIENT_URL || '*',
   credentials: true,
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -38,6 +39,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
+    database: 'supabase',
     connected: !!process.env.FB_PAGE_ACCESS_TOKEN,
   });
 });
@@ -60,11 +62,22 @@ app.use((err, req, res, next) => {
 });
 
 // ── Start Server ──
-app.listen(PORT, () => {
-  console.log(`\n🚀 Broadcast Server running on http://localhost:${PORT}`);
-  console.log(`📡 Facebook Page: ${process.env.FB_PAGE_ID || 'Not configured'}`);
-  console.log(`🔗 Client URL: ${process.env.CLIENT_URL || 'http://localhost:5173'}\n`);
+async function start() {
+  // Test Supabase connection
+  const dbOk = await testConnection();
+  if (!dbOk) {
+    console.error('\n❌ Cannot start: Supabase not configured properly');
+    console.log('💡 Set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env');
+    console.log('💡 Then run migration.sql in Supabase SQL Editor\n');
+  }
 
-  // Start scheduler for scheduled broadcasts
-  scheduleService.init();
-});
+  app.listen(PORT, () => {
+    console.log(`\n🚀 Broadcast Server running on port ${PORT}`);
+    console.log(`📦 Database: Supabase ${dbOk ? '✅' : '❌'}`);
+    console.log(`📡 Facebook: ${process.env.FB_PAGE_ACCESS_TOKEN ? 'Token set ✅' : 'Not configured'}`);
+    console.log(`🔗 Client: ${process.env.CLIENT_URL || '*'}\n`);
+    scheduleService.init();
+  });
+}
+
+start();

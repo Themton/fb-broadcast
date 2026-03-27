@@ -7,125 +7,88 @@ const scheduledJobs = new Map();
 const scheduler = {
   init() {
     console.log('⏰ Scheduler initialized');
-    // Check for any pending scheduled broadcasts every minute
     setInterval(() => this.checkScheduled(), 60000);
   },
 
-  checkScheduled() {
-    const pending = db.getScheduledBroadcasts();
-    const now = new Date();
-
-    for (const broadcast of pending) {
-      if (!broadcast.scheduledAt) continue;
-      const scheduledTime = new Date(broadcast.scheduledAt);
-
-      if (scheduledTime <= now && !scheduledJobs.has(broadcast.id)) {
-        console.log(`📤 Executing scheduled broadcast: ${broadcast.title}`);
-        this.executeBroadcast(broadcast.id);
+  async checkScheduled() {
+    try {
+      const pending = await db.getScheduledBroadcasts();
+      const now = new Date();
+      for (const bc of pending) {
+        if (!bc.scheduledAt) continue;
+        if (new Date(bc.scheduledAt) <= now && !scheduledJobs.has(bc.id)) {
+          console.log(`📤 Executing scheduled: ${bc.title}`);
+          this.executeBroadcast(bc.id);
+        }
       }
-    }
+    } catch (e) { console.error('Scheduler check error:', e.message); }
   },
 
   scheduleJob(broadcastId, dateTime) {
-    // Cancel existing job if any
-    if (scheduledJobs.has(broadcastId)) {
-      scheduledJobs.get(broadcastId).cancel();
-    }
-
+    if (scheduledJobs.has(broadcastId)) scheduledJobs.get(broadcastId).cancel();
     const job = schedule.scheduleJob(new Date(dateTime), () => {
-      console.log(`📤 Scheduled broadcast triggered: ${broadcastId}`);
+      console.log(`📤 Triggered: ${broadcastId}`);
       this.executeBroadcast(broadcastId);
     });
-
-    if (job) {
-      scheduledJobs.set(broadcastId, job);
-      console.log(`⏰ Broadcast ${broadcastId} scheduled for ${dateTime}`);
-    }
-
-    return job;
+    if (job) scheduledJobs.set(broadcastId, job);
   },
 
   cancelJob(broadcastId) {
     if (scheduledJobs.has(broadcastId)) {
       scheduledJobs.get(broadcastId).cancel();
       scheduledJobs.delete(broadcastId);
-      console.log(`❌ Cancelled scheduled broadcast: ${broadcastId}`);
     }
   },
 
   async executeBroadcast(broadcastId) {
-    const broadcast = db.getBroadcastById(broadcastId);
-    if (!broadcast) return;
+    try {
+      const broadcast = await db.getBroadcastById(broadcastId);
+      if (!broadcast) return;
 
-    const fb = new FacebookAPI();
+      const fb = new FacebookAPI();
+      await db.updateBroadcast(broadcastId, { status: 'sending', sentAt: new Date().toISOString() });
 
-    // Update status to sending
-    db.updateBroadcast(broadcastId, { status: 'sending', sentAt: new Date().toISOString() });
-
-    // Get recipients
-    let recipients;
-    if (broadcast.targetSegment === 'all') {
-      recipients = db.getSubscribers();
-    } else {
-      const segmentIds = Array.isArray(broadcast.targetSegment)
-        ? broadcast.targetSegment
-        : [broadcast.targetSegment];
-
-      const recipientSet = new Set();
-      for (const segId of segmentIds) {
-        const subs = db.getSubscribersBySegment(segId);
-        subs.forEach(s => recipientSet.add(s.id));
+      // Get recipients
+      let recipients;
+      if (broadcast.targetSegment === 'all') {
+        recipients = await db.getSubscribers();
+      } else {
+        const segIds = Array.isArray(broadcast.targetSegment) ? broadcast.targetSegment : [broadcast.targetSegment];
+        const set = new Set();
+        for (const segId of segIds) {
+          const subs = await db.getSubscribersBySegment(segId);
+          subs.forEach(s => set.add(s.id));
+        }
+        const allSubs = await db.getSubscribers();
+        recipients = [...set].map(id => allSubs.find(s => s.id === id)).filter(Boolean);
       }
-      recipients = [...recipientSet].map(id => db.getSubscribers().find(s => s.id === id)).filter(Boolean);
-    }
 
-    const recipientIds = recipients.map(r => r.id);
+      if (!recipients.length) {
+        await db.updateBroadcast(broadcastId, { status: 'completed', completedAt: new Date().toISOString(), stats: { total: 0, sent: 0, delivered: 0, read: 0, clicked: 0, failed: 0, errors: [] } });
+        return;
+      }
 
-    if (recipientIds.length === 0) {
-      db.updateBroadcast(broadcastId, {
-        status: 'completed',
-        completedAt: new Date().toISOString(),
-        stats: { total: 0, sent: 0, delivered: 0, read: 0, clicked: 0, failed: 0, errors: [] },
+      const results = await fb.broadcastMessage(recipients.map(r => r.id), broadcast.message, {
+        delayMs: 200,
+        onProgress: async (progress) => {
+          await db.updateBroadcast(broadcastId, {
+            stats: { total: progress.total, sent: progress.results.sent, delivered: progress.results.delivered, read: 0, clicked: 0, failed: progress.results.failed, errors: progress.results.errors }
+          });
+        },
       });
-      return;
+
+      await db.updateBroadcast(broadcastId, {
+        status: results.failed === results.total ? 'failed' : 'completed',
+        completedAt: new Date().toISOString(),
+        stats: { total: results.total, sent: results.sent, delivered: results.delivered, read: 0, clicked: 0, failed: results.failed, errors: results.errors },
+      });
+
+      scheduledJobs.delete(broadcastId);
+      console.log(`✅ Broadcast ${broadcastId}: ${results.sent}/${results.total} sent`);
+    } catch (e) {
+      console.error(`❌ Broadcast ${broadcastId} failed:`, e.message);
+      await db.updateBroadcast(broadcastId, { status: 'failed' });
     }
-
-    // Send via Facebook API
-    const results = await fb.broadcastMessage(recipientIds, broadcast.message, {
-      delayMs: 200, // Rate limiting
-      onProgress: (progress) => {
-        db.updateBroadcast(broadcastId, {
-          stats: {
-            total: progress.total,
-            sent: progress.results.sent,
-            delivered: progress.results.delivered,
-            read: 0,
-            clicked: 0,
-            failed: progress.results.failed,
-            errors: progress.results.errors,
-          },
-        });
-      },
-    });
-
-    // Update final status
-    db.updateBroadcast(broadcastId, {
-      status: results.failed === results.total ? 'failed' : 'completed',
-      completedAt: new Date().toISOString(),
-      stats: {
-        total: results.total,
-        sent: results.sent,
-        delivered: results.delivered,
-        read: 0,
-        clicked: 0,
-        failed: results.failed,
-        errors: results.errors,
-      },
-    });
-
-    // Cleanup
-    scheduledJobs.delete(broadcastId);
-    console.log(`✅ Broadcast ${broadcastId} completed: ${results.sent}/${results.total} sent`);
   },
 };
 
